@@ -22,7 +22,7 @@
     }
 
     header {
-      padding: 16px 24px;
+      padding: 14px 24px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -31,14 +31,15 @@
     }
 
     h1 {
-      font-size: 1.15rem;
+      font-size: 1.1rem;
       font-weight: 500;
-      letter-spacing: 0.02em;
+      letter-spacing: 0.03em;
+      color: #c7d2fe;
     }
 
     .controls {
       display: flex;
-      gap: 12px;
+      gap: 10px;
       align-items: center;
     }
 
@@ -48,18 +49,24 @@
       border: 1px solid #2a334d;
       border-radius: 6px;
       padding: 6px 12px;
-      font-size: 0.9rem;
+      font-size: 0.88rem;
       cursor: pointer;
+      transition: background 0.15s;
     }
 
     select:hover, button:hover {
       background: #242b42;
     }
 
+    button.active {
+      background: #312e81;
+      border-color: #4f46e5;
+    }
+
     main {
       flex: 1;
-      display: flex;
       position: relative;
+      overflow: hidden;
     }
 
     canvas {
@@ -72,19 +79,34 @@
       position: absolute;
       bottom: 20px;
       left: 24px;
-      background: rgba(13, 17, 28, 0.85);
-      padding: 12px 16px;
-      border-radius: 8px;
-      border: 1px solid #1a2035;
+      background: rgba(13, 17, 28, 0.88);
+      padding: 14px 18px;
+      border-radius: 10px;
+      border: 1px solid #1e293b;
       font-size: 0.9rem;
-      line-height: 1.5;
+      line-height: 1.55;
+      min-width: 210px;
+      backdrop-filter: blur(6px);
+    }
+
+    .info .label {
+      color: #94a3b8;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
     }
 
     .value {
-      font-size: 1.3rem;
+      font-size: 1.55rem;
       font-weight: 600;
       color: #7dd3fc;
-      margin-top: 4px;
+      margin: 2px 0 6px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .target {
+      color: #64748b;
+      font-size: 0.85rem;
     }
   </style>
 </head>
@@ -93,9 +115,9 @@
     <h1>Time Waves</h1>
     <div class="controls">
       <select id="functionSelect">
-        <option value="gaussian">Gaussian ∫ e^{-x²} dx</option>
-        <option value="lorentzian">Lorentzian ∫ 1/(x²+1) dx</option>
-        <option value="sinc">Dirichlet ∫ sin(x)/x dx</option>
+        <option value="gaussian">Gaussian · ∫ e^{-x²} dx</option>
+        <option value="lorentzian">Lorentzian · ∫ 1/(x²+1) dx</option>
+        <option value="sinc">Dirichlet · ∫ sin(x)/x dx</option>
       </select>
       <button id="playBtn">Play</button>
       <button id="resetBtn">Reset</button>
@@ -105,9 +127,9 @@
   <main>
     <canvas id="canvas"></canvas>
     <div class="info">
-      <div id="functionName">Gaussian</div>
+      <div class="label" id="functionName">Gaussian</div>
       <div class="value" id="integralValue">0.0000</div>
-      <div id="targetValue">Target: √π ≈ 1.77245</div>
+      <div class="target" id="targetValue">Target: √π ≈ 1.77245</div>
     </div>
   </main>
 
@@ -115,23 +137,230 @@
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
 
-    // Resize canvas to fill the main area
+    const functionSelect = document.getElementById('functionSelect');
+    const playBtn = document.getElementById('playBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const integralValueEl = document.getElementById('integralValue');
+    const functionNameEl = document.getElementById('functionName');
+    const targetValueEl = document.getElementById('targetValue');
+
+    // ========== CONFIG ==========
+    const X_MIN = -8;
+    const X_MAX = 8;
+    const Y_MIN = -0.4;
+    const Y_MAX = 1.3;
+
+    let currentFn = 'gaussian';
+    let playing = false;
+    let progress = 0;          // 0 → 1 (how far the integral has been computed)
+    let animationId = null;
+
+    // Exact targets
+    const targets = {
+      gaussian: { value: Math.sqrt(Math.PI), label: '√π ≈ 1.77245' },
+      lorentzian: { value: Math.PI, label: 'π ≈ 3.14159' },
+      sinc: { value: Math.PI, label: 'π ≈ 3.14159' }
+    };
+
+    const names = {
+      gaussian: 'Gaussian',
+      lorentzian: 'Lorentzian',
+      sinc: 'Dirichlet (sinc)'
+    };
+
+    // ========== MATH ==========
+    function f(x) {
+      if (currentFn === 'gaussian') {
+        return Math.exp(-x * x);
+      }
+      if (currentFn === 'lorentzian') {
+        return 1 / (x * x + 1);
+      }
+      // sinc (normalized so sinc(0) = 1)
+      if (Math.abs(x) < 1e-8) return 1;
+      return Math.sin(x) / x;
+    }
+
+    // ========== COORDINATE HELPERS ==========
+    function toCanvasX(x) {
+      return ((x - X_MIN) / (X_MAX - X_MIN)) * canvas.clientWidth;
+    }
+    function toCanvasY(y) {
+      return canvas.clientHeight - ((y - Y_MIN) / (Y_MAX - Y_MIN)) * canvas.clientHeight;
+    }
+
+    // ========== DRAWING ==========
+    function draw() {
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+
+      // Clear
+      ctx.fillStyle = '#0b0e17';
+      ctx.fillRect(0, 0, w, h);
+
+      // Subtle grid
+      ctx.strokeStyle = '#151a27';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      // horizontal
+      for (let y = Math.ceil(Y_MIN); y <= Y_MAX; y++) {
+        const cy = toCanvasY(y);
+        ctx.moveTo(0, cy);
+        ctx.lineTo(w, cy);
+      }
+      // vertical
+      for (let x = Math.ceil(X_MIN); x <= X_MAX; x++) {
+        const cx = toCanvasX(x);
+        ctx.moveTo(cx, 0);
+        ctx.lineTo(cx, h);
+      }
+      ctx.stroke();
+
+      // Axes
+      ctx.strokeStyle = '#334155';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      // x-axis
+      ctx.moveTo(0, toCanvasY(0));
+      ctx.lineTo(w, toCanvasY(0));
+      // y-axis
+      ctx.moveTo(toCanvasX(0), 0);
+      ctx.lineTo(toCanvasX(0), h);
+      ctx.stroke();
+
+      // ===== Running integral fill =====
+      const steps = 400;
+      const currentX = X_MIN + progress * (X_MAX - X_MIN);
+
+      // Fill under curve up to currentX
+      ctx.beginPath();
+      ctx.moveTo(toCanvasX(X_MIN), toCanvasY(0));
+
+      let integral = 0;
+      const dx = (X_MAX - X_MIN) / steps;
+
+      for (let i = 0; i <= steps; i++) {
+        const x = X_MIN + i * dx;
+        if (x > currentX) break;
+
+        const y = f(x);
+        integral += y * dx;
+
+        const cx = toCanvasX(x);
+        const cy = toCanvasY(y);
+
+        if (i === 0) ctx.lineTo(cx, cy);
+        else ctx.lineTo(cx, cy);
+      }
+
+      // close the fill
+      ctx.lineTo(toCanvasX(Math.min(currentX, X_MAX)), toCanvasY(0));
+      ctx.closePath();
+
+      // Soft glow fill
+      const gradient = ctx.createLinearGradient(0, toCanvasY(1.2), 0, toCanvasY(0));
+      gradient.addColorStop(0, 'rgba(56, 189, 248, 0.25)');
+      gradient.addColorStop(1, 'rgba(56, 189, 248, 0.05)');
+      ctx.fillStyle = gradient;
+      ctx.fill();
+
+      // ===== Full curve (faint) =====
+      ctx.beginPath();
+      for (let i = 0; i <= steps; i++) {
+        const x = X_MIN + i * dx;
+        const y = f(x);
+        const cx = toCanvasX(x);
+        const cy = toCanvasY(y);
+        if (i === 0) ctx.moveTo(cx, cy);
+        else ctx.lineTo(cx, cy);
+      }
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // ===== Active curve up to current progress =====
+      ctx.beginPath();
+      for (let i = 0; i <= steps; i++) {
+        const x = X_MIN + i * dx;
+        if (x > currentX) break;
+        const y = f(x);
+        const cx = toCanvasX(x);
+        const cy = toCanvasY(y);
+        if (i === 0) ctx.moveTo(cx, cy);
+        else ctx.lineTo(cx, cy);
+      }
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      // Update number
+      integralValueEl.textContent = integral.toFixed(4);
+    }
+
+    // ========== ANIMATION ==========
+    function animate() {
+      if (!playing) return;
+
+      progress += 0.0042; // speed
+      if (progress >= 1) {
+        progress = 1;
+        playing = false;
+        playBtn.textContent = 'Play';
+        playBtn.classList.remove('active');
+      }
+
+      draw();
+      animationId = requestAnimationFrame(animate);
+    }
+
+    // ========== CONTROLS ==========
+    playBtn.addEventListener('click', () => {
+      playing = !playing;
+      if (playing) {
+        playBtn.textContent = 'Pause';
+        playBtn.classList.add('active');
+        animate();
+      } else {
+        playBtn.textContent = 'Play';
+        playBtn.classList.remove('active');
+        cancelAnimationFrame(animationId);
+      }
+    });
+
+    resetBtn.addEventListener('click', () => {
+      playing = false;
+      progress = 0;
+      playBtn.textContent = 'Play';
+      playBtn.classList.remove('active');
+      cancelAnimationFrame(animationId);
+      draw();
+    });
+
+    functionSelect.addEventListener('change', (e) => {
+      currentFn = e.target.value;
+      functionNameEl.textContent = names[currentFn];
+      targetValueEl.textContent = 'Target: ' + targets[currentFn].label;
+
+      // reset on change
+      playing = false;
+      progress = 0;
+      playBtn.textContent = 'Play';
+      playBtn.classList.remove('active');
+      cancelAnimationFrame(animationId);
+      draw();
+    });
+
+    // ========== RESIZE ==========
     function resize() {
       canvas.width = canvas.clientWidth * devicePixelRatio;
       canvas.height = canvas.clientHeight * devicePixelRatio;
-      ctx.scale(devicePixelRatio, devicePixelRatio);
+      ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+      draw();
     }
     window.addEventListener('resize', resize);
+
+    // Initial draw
     resize();
-
-    // Placeholder - we will build the actual simulation next
-    ctx.fillStyle = '#0b0e17';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    ctx.fillStyle = '#4b5563';
-    ctx.font = '16px system-ui';
-    ctx.textAlign = 'center';
-    ctx.fillText('Canvas ready — simulation coming next', canvas.clientWidth / 2, canvas.clientHeight / 2);
   </script>
 </body>
 </html>
